@@ -11,7 +11,7 @@ import { api, ApiError, getErrorMessage, AnalysisResponse, AnalysisItem } from '
 import { usePinnedClauses } from '@/hooks/usePinnedClauses'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { toast } from 'sonner'
-import { Pin, Copy, AlertTriangle, CheckCircle2, FileX } from 'lucide-react'
+import { Pin, Copy, AlertTriangle, CheckCircle2, FileX, MessageSquare } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
 
 const RISK_COLORS = {
@@ -231,6 +231,7 @@ export function AnalysisResult() {
   const { id } = useParams<{ id: string }>()
   const { isPinned, pin, unpin } = usePinnedClauses()
   const [showPinnedOnly, setShowPinnedOnly] = useState(false)
+  const { copy } = useCopyToClipboard()
 
   const { data: analysis, isLoading, error } = useQuery({
     queryKey: ['analysis', id],
@@ -302,6 +303,11 @@ export function AnalysisResult() {
     toast.success('요약이 복사되었습니다')
   }
 
+  const copyAllNegotiationSuggestions = () => {
+    const text = (analysis.negotiationSuggestions || []).join('\n\n')
+    copy(text, '전체 협상 제안이 복사되었습니다')
+  }
+
   return (
     <div className="container py-8">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
@@ -327,6 +333,49 @@ export function AnalysisResult() {
           <SummaryCard analysis={analysis} />
         </div>
         <div className="md:col-span-3 space-y-6 order-1 md:order-2">
+          {(analysis.negotiationSuggestions || []).length > 0 && (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <MessageSquare className="h-5 w-5 text-primary flex-shrink-0" />
+                    <CardTitle>전체 협상 제안</CardTitle>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={copyAllNegotiationSuggestions}
+                  >
+                    <Copy className="h-4 w-4 mr-2 flex-shrink-0" />
+                    전체 복사
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {analysis.negotiationSuggestions.map((suggestion, idx) => (
+                    <div
+                      key={idx}
+                      className="p-4 bg-primary/5 border border-primary/20 rounded-lg text-sm relative group"
+                    >
+                      <p className="text-foreground pr-8">{suggestion}</p>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity h-8 w-8"
+                        onClick={() => {
+                          copy(suggestion, '협상 제안이 복사되었습니다')
+                        }}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {items.length === 0 ? (
             <EmptyState
               icon={Pin}

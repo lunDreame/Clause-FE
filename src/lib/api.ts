@@ -23,6 +23,12 @@ export interface Document {
   originalFileName?: string
   uploadedAt: string
   status: 'uploaded' | 'processing' | 'completed' | 'failed'
+  contentType?: string
+  sizeBytes?: number
+  createdAt?: string
+  extractedText?: string
+  textLength?: number
+  textSha256?: string
 }
 
 interface ApiResponse<T> {
@@ -73,13 +79,17 @@ export class ApiError extends Error {
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
-  FILE_TOO_LARGE: '파일 크기가 너무 큽니다. 10MB 이하의 파일을 업로드해주세요.',
-  INVALID_FILE_TYPE: 'PDF 파일만 업로드 가능합니다.',
-  FILE_UPLOAD_FAILED: '파일 업로드에 실패했습니다. 다시 시도해주세요.',
-  EXTRACTION_FAILED: '문서 추출에 실패했습니다. 파일을 확인해주세요.',
-  ANALYSIS_FAILED: '분석에 실패했습니다. 잠시 후 다시 시도해주세요.',
+  NOT_FOUND: '요청한 리소스를 찾을 수 없습니다.',
   DOCUMENT_NOT_FOUND: '문서를 찾을 수 없습니다.',
-  ANALYSIS_NOT_FOUND: '분석 결과를 찾을 수 없습니다.',
+  UNSUPPORTED_FILE_TYPE: '지원하지 않는 파일 형식입니다. PDF 파일만 업로드 가능합니다.',
+  OCR_NOT_IMPLEMENTED: '이미지 OCR은 아직 지원하지 않습니다. PDF 파일만 업로드 가능합니다.',
+  FILE_TOO_LARGE: '파일 크기가 너무 큽니다. 10MB 이하의 파일을 업로드해주세요.',
+  EXTRACTION_FAILED: '텍스트 추출에 실패했습니다. 파일을 확인해주세요.',
+  LLM_UPSTREAM_ERROR: '분석 엔진 응답이 불안정합니다. 잠시 후 다시 시도해주세요.',
+  JSON_REPAIR_FAILED: '분석 결과 형식 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+  RATE_LIMITED: '요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요.',
+  VALIDATION_ERROR: '요청 값 검증에 실패했습니다.',
+  INTERNAL_ERROR: '서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
   NETWORK_ERROR: '네트워크 오류가 발생했습니다. 연결을 확인해주세요.',
   UNKNOWN_ERROR: '알 수 없는 오류가 발생했습니다.',
 }
@@ -98,16 +108,27 @@ function validateUUID(uuid: string): boolean {
 
 async function fetchApi<T>(
   endpoint: string,
-  options?: RequestInit
+  options?: RequestInit & { skipContentType?: boolean }
 ): Promise<T> {
   const url = `${API_BASE_URL}${API_PREFIX}${endpoint}`
+
+  const defaultHeaders: Record<string, string> = {
+    Accept: 'application/json',
+  }
+
+  // multipart/form-data 요청이 아닌 경우에만 Content-Type 설정
+  if (!options?.skipContentType) {
+    defaultHeaders['Content-Type'] = 'application/json'
+  }
+
+  const headers = {
+    ...defaultHeaders,
+    ...(options?.headers as Record<string, string> | undefined),
+  }
+
   const response = await fetch(url, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      ...options?.headers,
-    },
+    headers,
   })
 
   const contentType = response.headers.get('content-type')
@@ -153,6 +174,17 @@ export const api = {
       body: formData,
     })
 
+    const contentType = response.headers.get('content-type')
+    const isJson = contentType?.includes('application/json')
+
+    if (!isJson && !response.ok) {
+      throw new ApiError(
+        response.status,
+        'HTTP_ERROR',
+        `HTTP error! status: ${response.status}`
+      )
+    }
+
     const result: ApiResponse<{
       documentId: string
       originalFileName: string
@@ -164,15 +196,16 @@ export const api = {
     if (!result.success) {
       throw new ApiError(
         response.status,
-        result.error?.code || 'FILE_UPLOAD_FAILED',
-        result.error?.message || '파일 업로드에 실패했습니다.'
+        result.error?.code || 'INTERNAL_ERROR',
+        result.error?.message || '파일 업로드에 실패했습니다.',
+        result.error?.details
       )
     }
 
     if (!result.data?.documentId) {
       throw new ApiError(
         response.status,
-        'INVALID_RESPONSE',
+        'INTERNAL_ERROR',
         '문서 업로드 후 documentId를 받지 못했습니다.'
       )
     }
@@ -183,11 +216,18 @@ export const api = {
       filename: result.data.originalFileName,
       originalFileName: result.data.originalFileName,
       uploadedAt: result.data.createdAt,
+      createdAt: result.data.createdAt,
+      contentType: result.data.contentType,
+      sizeBytes: result.data.sizeBytes,
       status: 'uploaded',
     }
   },
 
-  async extractDocument(documentId: string): Promise<void> {
+  async extractDocument(documentId: string): Promise<{
+    documentId: string
+    textLength: number
+    textSha256: string
+  }> {
     if (!documentId) {
       throw new ApiError(400, 'VALIDATION_ERROR', 'documentId가 필요합니다.')
     }
@@ -200,7 +240,11 @@ export const api = {
       )
     }
 
-    await fetchApi(`/documents/${documentId}/extract`, {
+    return fetchApi<{
+      documentId: string
+      textLength: number
+      textSha256: string
+    }>(`/documents/${documentId}/extract`, {
       method: 'POST',
     })
   },
@@ -275,7 +319,31 @@ export const api = {
     }
 
     const queryParams = includeText ? '?includeText=true' : ''
-    return fetchApi<Document>(`/documents/${documentId}${queryParams}`)
+    const data = await fetchApi<{
+      documentId: string
+      originalFileName: string
+      contentType: string
+      sizeBytes: number
+      createdAt: string
+      extractedText?: string
+      textLength?: number
+      textSha256?: string
+    }>(`/documents/${documentId}${queryParams}`)
+
+    return {
+      id: data.documentId,
+      documentId: data.documentId,
+      filename: data.originalFileName,
+      originalFileName: data.originalFileName,
+      uploadedAt: data.createdAt,
+      createdAt: data.createdAt,
+      contentType: data.contentType,
+      sizeBytes: data.sizeBytes,
+      extractedText: data.extractedText,
+      textLength: data.textLength,
+      textSha256: data.textSha256,
+      status: 'uploaded',
+    }
   },
 
   async getDocumentAnalyses(documentId: string): Promise<AnalysisResponse[]> {

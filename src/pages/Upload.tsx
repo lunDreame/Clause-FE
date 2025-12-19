@@ -88,9 +88,9 @@ export function Upload() {
     onDropRejected: (fileRejections) => {
       const rejection = fileRejections[0]
       if (rejection.errors.some((e) => e.code === 'file-too-large')) {
-        toast.error('파일 크기가 10MB를 초과합니다')
+        toast.error(getErrorMessage('FILE_TOO_LARGE'))
       } else if (rejection.errors.some((e) => e.code === 'file-invalid-type')) {
-        toast.error('PDF 파일만 업로드 가능합니다')
+        toast.error(getErrorMessage('UNSUPPORTED_FILE_TYPE'))
       } else {
         toast.error('파일 업로드에 실패했습니다')
       }
